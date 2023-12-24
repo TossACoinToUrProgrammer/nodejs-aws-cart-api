@@ -1,55 +1,100 @@
-import { Injectable } from '@nestjs/common';
+import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
 
-import { v4 } from 'uuid';
-
-import { Cart } from '../models';
+import { CartStatuses, CartType } from '../models';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Cart as CartEntity } from '../cart.entity';
+import { Repository } from 'typeorm';
+import { CartItem } from '../cart-item.entity';
 
 @Injectable()
 export class CartService {
-  private userCarts: Record<string, Cart> = {};
+  private userCarts: Record<string, CartType> = {};
 
-  findByUserId(userId: string): Cart {
-    return this.userCarts[ userId ];
+  constructor(
+    @InjectRepository(CartEntity)
+    private readonly cartRepository: Repository<CartType>,
+    @InjectRepository(CartItem)
+    private readonly cartItemRepository: Repository<CartItem>,
+  ) {}
+
+  async findByUserId(userId: string): Promise<CartType> {
+    if (!userId) return;
+    const cart = await this.cartRepository
+      .createQueryBuilder('cart')
+      .where('cart.user_id = :userId', { userId })
+      .leftJoinAndSelect('cart.items', 'items')
+      .getOne();
+    return cart;
   }
 
   createByUserId(userId: string) {
-    const id = v4();
+    console.log('created');
     const userCart = {
-      id,
+      user_id: userId,
       items: [],
+      status: CartStatuses.OPEN,
     };
 
-    this.userCarts[ userId ] = userCart;
-
-    return userCart;
+    const newCart = this.cartRepository.create(userCart);
+    return this.cartRepository.save(newCart);
   }
 
-  findOrCreateByUserId(userId: string): Cart {
-    const userCart = this.findByUserId(userId);
-
+  async findOrCreateByUserId(userId: string): Promise<CartType> {
+    const userCart = await this.findByUserId(userId);
     if (userCart) {
-      return userCart;
+      const mappedItems = userCart.items.map((item) => ({
+        ...item,
+        product: {
+          //@ts-ignore
+          id: item.product_id,
+          title: 'test product',
+          description: 'test descroption',
+          price: 110,
+        },
+      }));
+      return { ...userCart, items: mappedItems };
     }
 
     return this.createByUserId(userId);
   }
 
-  updateByUserId(userId: string, { items }: Cart): Cart {
-    const { id, ...rest } = this.findOrCreateByUserId(userId);
+  async updateByUserId(userId: string, { items }: CartType): Promise<CartType> {
+    const cart = await this.findOrCreateByUserId(userId);
 
-    const updatedCart = {
-      id,
-      ...rest,
-      items: [ ...items ],
+    for (const item of items) {
+      const cartItem = new CartItem();
+      //@ts-ignore
+      cartItem.cart = cart;
+      //@ts-ignore
+      cartItem.product_id = item.product_id;
+      cartItem.count = item.count;
+
+      await this.cartItemRepository.save(cartItem);
     }
 
-    this.userCarts[ userId ] = { ...updatedCart };
+    const updatedCart = await this.cartRepository.findOne({
+      relations: ['items'],
+      where: { id: cart.id },
+    });
+    
+    console.log('updatedCart', updatedCart);
 
-    return { ...updatedCart };
+    const mappedItems = updatedCart.items.map((item) => ({
+      ...item,
+      product: {
+        //@ts-ignore
+        id: item.product_id,
+        title: 'test product',
+        description: 'test descroption',
+        price: 110,
+      },
+    }));
+
+    return { ...updatedCart, items: mappedItems };
   }
 
-  removeByUserId(userId): void {
-    this.userCarts[ userId ] = null;
+  async removeByUserId(userId) {
+    const cart = await this.findOrCreateByUserId(userId);
+    await this.cartRepository.remove(cart);
   }
-
 }
